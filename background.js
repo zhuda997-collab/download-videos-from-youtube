@@ -1,0 +1,1 @@
+chrome.action.onClicked.addListener(function(tab) {    alert('hello');});//todo : 修改客户端的IP地址
