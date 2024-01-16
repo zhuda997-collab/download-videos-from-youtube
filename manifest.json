@@ -2,7 +2,22 @@
   "name": "自动下载youtube视频",
   "description" : "每十秒刷新youtube的订阅页面, 判断前五个视频是否已经被下载, 如果没有被下载则: 自动触发 downie 下载视频",
   "version": "2.0.3",
-  "manifest_version": 3,
+  "background": {
+      "scripts": ["background.js"],
+      "persistent": false
+  },
+  "manifest_version": 2,
+  "permissions": [
+      "activeTab"
+  ],
+  "browser_action": {
+    "default_icon": {
+       "16": "auto-download-youtube.png",
+       "48": "auto-download-youtube.png",
+       "128": "auto-download-youtube.png"
+    },
+    "default_popup": "popup.html"
+  },
   "icons": {
     "16": "auto-download-youtube.png",
     "32": "auto-download-youtube.png",
@@ -16,9 +31,10 @@
         "https://www.google.com/sorry/index?continue=*"
       ],
       "js":[
-        "jquery.min.js",
+         "jquery.min.js",
          "jquery.md5.js",
-         "autoDownload.js"
+         "autoDownload.js",
+         "popup.js"
       ],
       "css": [
       ]
