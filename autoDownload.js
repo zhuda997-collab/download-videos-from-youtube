@@ -317,21 +317,16 @@ var downLoadVideo = async function (url, name, i) {
         downieUrl = downieUrl.replaceAll("&", "%26");
         downieUrl = downieUrl.replaceAll("#", "%23");
         downieUrl += '&destination=' + destination;
-        // 走 service worker 创建 tab, 不要用 window.open
-        // 限速和错重试都在 background.js 里处理
+        // (2026-06-15) 直接调 chrome.tabs.create, 不再走 service worker
+        // 原因: service worker 不热重载, 用户的 Chrome 可能还是老版 background.js
+        //       (没有 openDownieUrl handler), 导致 "unknown action: openDownieUrl" 报错
+        // 修复: content_scripts 直接调 chrome.tabs.create (需要 manifest 里的 "tabs" 权限)
+        //       限速靠 loopVideos 里的 await sleep(1200) 串行调
         try {
-            const resp = await chrome.runtime.sendMessage({
-                action: 'openDownieUrl',
-                url: downieUrl,
-                index: i
-            });
-            if (resp && resp.success) {
-                console.log(i + ' ' + name + ' (downie 创建 tab 成功)');
-            } else {
-                console.error(i + ' ' + name + ' downie 创建 tab 失败:', resp && resp.error);
-            }
+            await chrome.tabs.create({url: downieUrl, active: false});
+            console.log(i + ' ' + name + ' (downie 创建 tab 成功)');
         } catch (e) {
-            console.error(i + ' ' + name + ' sendMessage 异常:', e.message);
+            console.error(i + ' ' + name + ' chrome.tabs.create 失败:', e && e.message);
         }
     } else if (downloader === 'ytd') {
         var ytdUrl = 'ytd://' + (url).replace(/https?:\/\//i, '');

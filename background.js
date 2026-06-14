@@ -4,6 +4,10 @@
 // 3. service worker onMessage 改用 async/await + sendResponse 异步
 // 4. 文件名仍是 background.js（manifest 里 service_worker 配置项）
 
+// 版本标识 (2026-06-15): 启动时 log, 方便确认 Chrome 是否加载了新版本
+const EXT_VERSION = '3.1.0-mv3';
+console.log('[background] ' + EXT_VERSION + ' service worker started');
+
 // 初始化默认配置
 const DEFAULT_CONFIG = {
     num: '10',
