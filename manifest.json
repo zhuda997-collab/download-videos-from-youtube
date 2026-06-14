@@ -24,6 +24,12 @@
     "48": "auto-download-youtube.png",
     "128": "auto-download-youtube.png"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["config.json"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "content_scripts": [
     {
       "matches": [
@@ -33,8 +39,7 @@
       "js":[
          "jquery.min.js",
          "jquery.md5.js",
-         "autoDownload.js",
-         "popup.js"
+         "autoDownload.js"
       ],
       "css": [
       ]
