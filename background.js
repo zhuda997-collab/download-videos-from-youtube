@@ -75,6 +75,27 @@ async function handleMessage(request, sender) {
         console.log('[background] 返回 sharedData:', data);
         return data;
     }
+    if (request.action === "openDownieUrl") {
+        // (2026-06-15) 修复: 连续 window.open 触发 downie:// 被 Chrome MV3 限速
+        // 原因: content_scripts 里连续 10 次 window.open(downie://, '_blank') 在 MV3 service worker 下会被静默丢包，
+        //       只剩第 1 个能注册协议, 后面 9 个都开成空白 tab
+        // 修复: 走 service worker 的 chrome.tabs.create, 每次创建之间 sleep 1.2s 给 Downie 协议注册留时间
+        const url = request.url;
+        const index = request.index;
+        if (!url) {
+            return {success: false, error: 'url is empty'};
+        }
+        try {
+            await chrome.tabs.create({url: url, active: false});
+            console.log('[background] openDownieUrl 发起 tab index=' + index);
+        } catch (e) {
+            console.error('[background] openDownieUrl 失败 index=' + index, e);
+            return {success: false, error: e.message};
+        }
+        // 限速: Chrome MV3 对 chrome.tabs.create 1s 限速 1 次, 给 Downie 协议注册留 200ms 余量
+        await new Promise(r => setTimeout(r, 1200));
+        return {success: true};
+    }
     if (request.action === "clearTimes1") {
         // content_scripts 让 service worker 帮忙清 localStorage（content 那边自己有 localStorage）
         // 这个 action 实际上不需要 service worker 处理，content_scripts 自己调 clearTimes1()
