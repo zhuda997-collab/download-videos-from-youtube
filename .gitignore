@@ -1,0 +1,22 @@
+# =====================================================
+# Chrome 扩展关键私钥 — 绝对不能 commit 到任何仓库
+# key.pem 是 Chrome Web Store 用来派生扩展 ID 的私钥
+# 泄露后任何人都能伪造同 ID 的扩展覆盖安装
+# =====================================================
+key.pem
+key_pkcs1.pem
+*.pem
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+Thumbs.db
+
+# Node / build（如果以后加 webpack/vite）
+node_modules/
+dist/
+build/
+*.log

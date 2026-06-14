@@ -1,16 +1,16 @@
 {
   "name": "自动下载youtube视频",
-  "description" : "每十秒刷新youtube的订阅页面, 判断前五个视频是否已经被下载, 如果没有被下载则: 自动触发 downie 下载视频",
-  "version": "2.0.3",
+  "description" : "每45秒刷新youtube的订阅页面, 判断前N个视频是否已经被下载, 如果没有被下载则: 自动触发 downie 下载视频",
+  "version": "3.0.0",
   "background": {
-      "scripts": ["background.js"],
-      "persistent": false
+      "service_worker": "background.js"
   },
-  "manifest_version": 2,
+  "manifest_version": 3,
   "permissions": [
-      "activeTab"
+      "activeTab",
+      "storage"
   ],
-  "browser_action": {
+  "action": {
     "default_icon": {
        "16": "auto-download-youtube.png",
        "48": "auto-download-youtube.png",
