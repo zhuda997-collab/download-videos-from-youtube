@@ -306,8 +306,9 @@ var downLoadVideo = async function (url, name, i) {
         console.error('URL解析失败:', e);
         // 如果URL解析失败，保持原url不变
     }
-    if (window.localStorage.getItem(url)) {
+    if (window.localStorage.getItem(url) !== null) {
         //已经下载过了
+        // (2026-06-15) 改 !== null, 原 if (getItem(url)) 在 value=0 时会 false, 重复下载
         console.log(i + ' 1');
         return;
     }
