@@ -398,21 +398,84 @@ var downLoadVideo = async function (url, name, i, trigger) {
             if (attempt < 3) await sleep(800);  // 重试 backoff
         }
 
-        // 方案 2: 兜底 chrome.tabs.create (content script 上下文直接调)
-        // (2026-06-15 12:42) 改: window.open(downie://) → chrome.tabs.create
-        //   原因: window.open 触发 Edge 协议落地页 (让用户点"打开"), chrome.tabs.create 是
-        //   扩展 privileged API, Edge 视为"扩展派发"不弹落地页
-        //   跟 commit 8b07e2d 行为一致 (8b07e2d 也是 content script 直接调 chrome.tabs.create)
-        //   chrome.tabs.create 不需要 user gesture, 兜底对所有 trigger 都跑
+        // 方案 2 (E5-C 改造 2026-06-16): 兜底走 9090 /api/downie/download
+        //
+        // 历史: 兜底一直是 chrome.tabs.create({url: downieUrl}), 但 downie://XUOpenLink 是
+        //   Chromium External Protocol, 即使从扩展触发也会弹 External Protocol Dialog
+        //   (Chromium 内部 dialog, 不是 macOS 弹窗). 改 macOS LaunchServices (E1) /
+        //   QQBrowser user prefs policy (E6) 都无效.
+        //
+        // 修法 (E5-A + E5-C, 2026-06-16):
+        //   - 9090 新加 GET /api/downie/download?url=...&dest=... 端点
+        //   - 端点内部调 osascript 'open location downie://XUOpenLink?...'
+        //   - osascript 走 macOS LaunchServices, **完全不经 Chrome 协议栈**, 不弹 dialog
+        //   - 验证: osascript 'open location' 真的让 Downie 4 开始下载 (实测 2026-06-16 01:22)
+        //
+        // fetch 失败兜底:
+        //   - 9090 没起: fetch reject → 等会儿再试 chrome.tabs.create (原行为)
+        //   - 9090 起来但 osascript 失败: response.success=false → 等会儿再试 chrome.tabs.create
+        //
+        // CORS: 9090 DownieDownloadController 已加 @CrossOrigin for youtube.com / chrome-extension://*
         if (!sendSuccess) {
             console.warn(i + ' ' + name + ' 3 次 sendMessage 失败, '
-                + '走兜底 chrome.tabs.create (trigger=' + trigger + ')');
+                + '走 E5-C 兜底 fetch 9090 /api/downie/download (trigger=' + trigger + ')');
+            // 提取原始 YouTube URL 和 destination (构造 fetch URL)
+            // downieUrl 形如: downie://XUOpenLink?url=...&destination=...
+            // fetch endpoint 接收 url (youtube url) 和 dest (本地目录), 不接收 downie:// URL
             try {
-                await chrome.tabs.create({url: downieUrl, active: false});
-                console.log(i + ' ' + name + ' (chrome.tabs.create 兜底成功)');
+                // 从 downieUrl 拆出原始 url 和 destination
+                // downieUrl 里的 url/destination 都是 encodeURI 风格, 需要再 decode 一次给 fetch
+                let m = downieUrl.match(/url=([^&]+)&destination=(.+)$/);
+                if (!m) {
+                    throw new Error('downieUrl 解析失败: ' + downieUrl.substring(0, 100));
+                }
+                let originalUrl = decodeURIComponent(m[1]);
+                let originalDest = decodeURIComponent(m[2]);
+                let fetchUrl = 'http://localhost:9090/api/downie/download'
+                    + '?url=' + encodeURIComponent(originalUrl)
+                    + '&dest=' + encodeURIComponent(originalDest);
+
+                // fetch (3s 超时, osascript 一般秒返回)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                let resp;
+                try {
+                    resp = await fetch(fetchUrl, {signal: controller.signal});
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (data && data.success) {
+                        console.log(i + ' ' + name
+                            + ' (E5-C fetch 9090 成功, downieUrl='
+                            + (data.downieUrl ? data.downieUrl.substring(0, 80) : '?') + '...)');
+                    } else {
+                        console.error(i + ' ' + name
+                            + ' E5-C fetch 9090 但 downie 失败:',
+                            data && data.error);
+                    }
+                } else {
+                    console.error(i + ' ' + name
+                        + ' E5-C fetch 9090 HTTP ' + resp.status);
+                }
             } catch (e) {
-                console.error(i + ' ' + name + ' chrome.tabs.create 兜底失败:',
+                // fetch reject (9090 没起 / 网络错 / AbortError 超时)
+                console.error(i + ' ' + name
+                    + ' E5-C fetch 9090 异常:',
                     e && e.message);
+                // 最后兜底: chrome.tabs.create (原行为, 期望有 user gesture)
+                // 但如果是 auto-config / auto-timeout, 这里也会弹 dialog
+                // 所以只是尽力, 不指望
+                if (trigger === 'user-click') {
+                    console.warn(i + ' ' + name
+                        + ' E5-C fetch 失败, user-click 走最后兜底 chrome.tabs.create');
+                    try {
+                        await chrome.tabs.create({url: downieUrl, active: false});
+                    } catch (e2) {
+                        console.error(i + ' ' + name + ' 最终兜底也失败:', e2 && e2.message);
+                    }
+                }
             }
         }
     } else if (downloader === 'ytd') {
