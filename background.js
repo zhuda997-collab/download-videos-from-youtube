@@ -80,23 +80,69 @@ async function handleMessage(request, sender) {
         return data;
     }
     if (request.action === "openDownieUrl") {
-        // (2026-06-15) 修复: 连续 window.open 触发 downie:// 被 Chrome MV3 限速
-        // 原因: content_scripts 里连续 10 次 window.open(downie://, '_blank') 在 MV3 service worker 下会被静默丢包，
-        //       只剩第 1 个能注册协议, 后面 9 个都开成空白 tab
-        // 修复: 走 service worker 的 chrome.tabs.create, 每次创建之间 sleep 1.2s 给 Downie 协议注册留时间
-        const url = request.url;
+        // E5-D 改造 (2026-06-16): 主路径也走 fetch 9090, 不走 chrome.tabs.create
+        //
+        // 背景: E5-C 只改了 autoDownload.js 兑底路径, 主路径 (本 handler) 仍调
+        //   chrome.tabs.create({url: downie://XUOpenLink?url=...}), 跳 Chromium External
+        //   Protocol Dialog (浏览器内部弹窗, 不是 macOS 弹窗). 修 LaunchServices / user
+        //   prefs policy 都无效. 验证: 用户点 YouTube 下载还是弹窗.
+        //
+        // 修法 (E5-D): 本 handler 改为 fetch 9090 /api/downie/download, 9090 内部调
+        //   osascript 'open location downie://XUOpenLink?...', 走 macOS LaunchServices
+        //   不弹 Chrome protocol dialog. 同时保留 background 主路径, 限速 1.2s 给
+        //   LaunchServices cache 留时间.
+        //
+        // 优点:
+        //   - 1.2s sleep 仍保留 (chrome MV3 tabs.create 限速, 现在改成 fetch 也避免掉)
+        //   - 完全不走 chrome.tabs.create → 100% 不弹 External Protocol Dialog
+        //   - fetch 失败 → 返回 success:false, content script 还会走兑底 E5-C
+        const downieUrl = request.url;
         const index = request.index;
-        if (!url) {
+        if (!downieUrl) {
             return {success: false, error: 'url is empty'};
         }
+        // 从 downie://XUOpenLink?url=...&destination=... 拆出原始 url 和 destination
+        // fetch 9090 端点接收 url (youtube url) 和 dest (本地目录)
+        let m = downieUrl.match(/url=([^&]+)&destination=(.+)$/);
+        if (!m) {
+            console.error('[background] E5-D downieUrl 解析失败:', downieUrl.substring(0, 100));
+            return {success: false, error: 'downieUrl 解析失败'};
+        }
+        let originalUrl = decodeURIComponent(m[1]);
+        let originalDest = decodeURIComponent(m[2]);
+        let fetchUrl = 'http://localhost:9090/api/downie/download'
+            + '?url=' + encodeURIComponent(originalUrl)
+            + '&dest=' + encodeURIComponent(originalDest);
         try {
-            await chrome.tabs.create({url: url, active: false});
-            console.log('[background] openDownieUrl 发起 tab index=' + index);
+            // fetch (3s 超时)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000);
+            let resp;
+            try {
+                resp = await fetch(fetchUrl, {signal: controller.signal});
+            } finally {
+                clearTimeout(timeoutId);
+            }
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data && data.success) {
+                    console.log('[background] E5-D openDownieUrl fetch 9090 成功 index=' + index
+                        + ' downieUrl=' + (data.downieUrl ? data.downieUrl.substring(0, 60) : '?'));
+                } else {
+                    console.error('[background] E5-D openDownieUrl fetch 9090 但 downie 失败 index=' + index,
+                        data && data.error);
+                    return {success: false, error: data && data.error};
+                }
+            } else {
+                console.error('[background] E5-D openDownieUrl fetch 9090 HTTP ' + resp.status + ' index=' + index);
+                return {success: false, error: 'HTTP ' + resp.status};
+            }
         } catch (e) {
-            console.error('[background] openDownieUrl 失败 index=' + index, e);
+            console.error('[background] E5-D openDownieUrl fetch 9090 异常 index=' + index,
+                e && e.message);
             return {success: false, error: e.message};
         }
-        // 限速: Chrome MV3 对 chrome.tabs.create 1s 限速 1 次, 给 Downie 协议注册留 200ms 余量
+        // 限速: 给 LaunchServices cache + Downie 协议注册留时间, 避免并发太多被 downie 丢包
         await new Promise(r => setTimeout(r, 1200));
         return {success: true};
     }

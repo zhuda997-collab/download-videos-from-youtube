@@ -11,6 +11,9 @@
       "storage",
       "tabs"
   ],
+  "host_permissions": [
+      "http://localhost:9090/*"
+  ],
   "action": {
     "default_icon": {
        "16": "auto-download-youtube.png",
