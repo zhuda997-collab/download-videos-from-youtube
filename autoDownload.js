@@ -357,19 +357,19 @@ var downLoadVideo = async function (url, name, i, trigger) {
         //   ✅ MV3 sw 限速可控 (handler 内 sleep 1.2s)
         //   ⚠️ 风险: 老 sw 可能没 openDownieUrl handler → "unknown action"
         //
-        // 方案 2 (兜底): 3 次 sendMessage 失败 → window.open(downie://)
+        // 方案 2 (兜底): 3 次 sendMessage 失败 → chrome.tabs.create (content script 上下文)
         //   ✅ 主路径全挂 (sw 死了 / Chrome 没热重载) 还能跑
-        //   ⚠️ 需要 user gesture, 否则 Chrome 弹窗拦截器会吃掉 window.open
-        //   ⚠️ setTimeout 30s 后的程序 click 已丢失 user gesture → 兜底会被拦截
+        //   ✅ chrome.tabs.create 是扩展 privileged API, Edge 视为"扩展派发"不弹协议落地页
+        //   ✅ 不需要 user gesture, 所有 trigger 都跑
         //
-        // 双保险触发逻辑 (按 user gesture 在不在手分情况):
-        // | trigger      | isTrusted | 主路径      | 兜底 window.open |
-        // |--------------|-----------|-------------|------------------|
-        // | user-click   | true      | ✅ sendMessage | ✅ 可用         |
-        // | auto-config  | false     | ✅ sendMessage | ❌ 被拦截       |
-        // | auto-timeout | false     | ✅ sendMessage | ❌ 被拦截       |
+        // 双保险触发逻辑 (主路径 sw 派发, 兜底 cs 派发):
+        // | trigger      | 主路径 sendMessage  | 兜底 chrome.tabs.create |
+        // |--------------|---------------------|--------------------------|
+        // | user-click   | ✅ 3 次重试         | ✅ 主全挂时跑            |
+        // | auto-config  | ✅ 3 次重试         | ✅ 主全挂时跑            |
+        // | auto-timeout | ✅ 3 次重试         | ✅ 主全挂时跑            |
         //
-        // 结论: 主路径永远跑; 兜底仅在 user gesture 在手时才尝试 (并明确报告)
+        // 结论: 主路径永远跑; 兜底仅在主全挂时跑 (跟 user gesture 无关)
 
         // 方案 1: 3 次 sendMessage 重试
         let sendSuccess = false;
@@ -398,34 +398,21 @@ var downLoadVideo = async function (url, name, i, trigger) {
             if (attempt < 3) await sleep(800);  // 重试 backoff
         }
 
-        // 方案 2: 兜底 window.open (仅 user gesture 在手时有效)
+        // 方案 2: 兜底 chrome.tabs.create (content script 上下文直接调)
+        // (2026-06-15 12:42) 改: window.open(downie://) → chrome.tabs.create
+        //   原因: window.open 触发 Edge 协议落地页 (让用户点"打开"), chrome.tabs.create 是
+        //   扩展 privileged API, Edge 视为"扩展派发"不弹落地页
+        //   跟 commit 8b07e2d 行为一致 (8b07e2d 也是 content script 直接调 chrome.tabs.create)
+        //   chrome.tabs.create 不需要 user gesture, 兜底对所有 trigger 都跑
         if (!sendSuccess) {
-            // (2026-06-15 09:46) user gesture 检测:
-            //   - 真实 user click: 事件 callback 链里 isTrusted=true
-            //   - setTimeout 30s 后程序 click(): isTrusted=false, user gesture 丢失
-            //   - 30s 兜底 setTimeout 里调: isTrusted=false
-            // window.open(downie://) 走 Chrome 弹窗拦截器,
-            //   非 user gesture 时返回 null (被吞掉), 不报错也不弹窗
-            const hasUserGesture = trigger === 'user-click';
-            if (!hasUserGesture) {
-                console.error(i + ' ' + name + ' 3 次 sendMessage 失败, '
-                    + '但 trigger=' + trigger + ' (非 user gesture), 兜底 window.open '
-                    + '会被弹窗拦截器吞掉, 跳过兜底');
-            } else {
-                console.warn(i + ' ' + name + ' 3 次 sendMessage 失败, '
-                    + '兜底 window.open (user gesture 在手)');
-                try {
-                    const win = window.open(downieUrl, '_blank');
-                    if (win) {
-                        console.log(i + ' ' + name + ' (window.open 兜底成功)');
-                    } else {
-                        console.error(i + ' ' + name + ' window.open 返回 null '
-                            + '(可能被弹窗拦截器拦截)');
-                    }
-                } catch (e) {
-                    console.error(i + ' ' + name + ' window.open 异常:',
-                        e && e.message);
-                }
+            console.warn(i + ' ' + name + ' 3 次 sendMessage 失败, '
+                + '走兜底 chrome.tabs.create (trigger=' + trigger + ')');
+            try {
+                await chrome.tabs.create({url: downieUrl, active: false});
+                console.log(i + ' ' + name + ' (chrome.tabs.create 兜底成功)');
+            } catch (e) {
+                console.error(i + ' ' + name + ' chrome.tabs.create 兜底失败:',
+                    e && e.message);
             }
         }
     } else if (downloader === 'ytd') {

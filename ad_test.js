@@ -312,8 +312,8 @@ async function main() {
         assertTrue(tabsCreateCalls[0].url.includes('test2'), 'url 应包含 test2');
     });
 
-    // ----- Test 3: 兜底 — 3 次失败 + trigger=user-click → 走 window.open -----
-    test('T3 兜底: 3 次 sendMessage 失败 + user-click → 走 window.open(downie://)', async () => {
+    // ----- Test 3: 兜底 — 3 次失败 + trigger=user-click → 走 chrome.tabs.create (content script 上下文) -----
+    test('T3 兜底: 3 次 sendMessage 失败 + user-click → 走 chrome.tabs.create(content script 上下文)', async () => {
         const adCode = fs.readFileSync(path.join(__dirname, 'autoDownload.js'), 'utf8');
         const bgCode = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
 
@@ -348,14 +348,14 @@ async function main() {
 
         const sendCount = log.filter(e => e.type === 'sendMessage' && e.msg.action === 'openDownieUrl').length;
         assertEq(sendCount, 3, '应 sendMessage 3 次');
-        assertEq(tabsCreateCalls.length, 0, 'tabs.create 不应被调 (3 次都失败)');
-        // 验证 window.open 被调
-        assertEq(win._openCalls.length, 1, 'window.open 应被调 1 次');
-        assertTrue(win._openCalls[0].url.startsWith('downie://XUOpenLink?url='), 'window.open url 应是 downie://');
+        // 兜底走 content script 的 chrome.tabs.create (3 次主路径都失败, 兜底补上)
+        assertEq(tabsCreateCalls.length, 1, 'tabs.create 应被调 1 次 (兜底)');
+        assertTrue(tabsCreateCalls[0].url.includes('test3'), '兜底 url 应包含 test3');
+        assertEq(tabsCreateCalls[0].active, false, '兜底 active 应是 false');
     });
 
-    // ----- Test 4: 兜底跳过 — 3 次失败 + trigger=auto-config → 跳过 window.open (user gesture 丢失) -----
-    test('T4 兜底跳过: 3 次 sendMessage 失败 + auto-config → 跳过 window.open (user gesture 丢失)', async () => {
+    // ----- Test 4: 兜底在 auto-config 下也跑 — chrome.tabs.create 不需要 user gesture -----
+    test('T4 兜底在 auto-config 下也跑: chrome.tabs.create 不需要 user gesture', async () => {
         const adCode = fs.readFileSync(path.join(__dirname, 'autoDownload.js'), 'utf8');
         const bgCode = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
 
@@ -388,11 +388,13 @@ async function main() {
 
         await downLoadVideo('https://www.youtube.com/watch?v=test4', 'Test Video 4', 0, 'auto-config');
 
-        assertEq(win._openCalls, undefined, 'window.open 不应被调 (user gesture 丢失)');
+        // 兜底 chrome.tabs.create 现在对所有 trigger 都跑 (不需要 user gesture)
+        assertEq(tabsCreateCalls.length, 1, '兜底 chrome.tabs.create 应被调 1 次 (auto-config 也能跑)');
+        assertTrue(tabsCreateCalls[0].url.includes('test4'), '兜底 url 应包含 test4');
     });
 
-    // ----- Test 5: 兜底跳过 — 3 次失败 + trigger=auto-timeout → 跳过 window.open -----
-    test('T5 兜底跳过: 3 次 sendMessage 失败 + auto-timeout → 跳过 window.open', async () => {
+    // ----- Test 5: 兜底在 auto-timeout 下也跑 — chrome.tabs.create 不需要 user gesture -----
+    test('T5 兜底在 auto-timeout 下也跑: chrome.tabs.create 不需要 user gesture', async () => {
         const adCode = fs.readFileSync(path.join(__dirname, 'autoDownload.js'), 'utf8');
         const bgCode = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
 
@@ -425,7 +427,9 @@ async function main() {
 
         await downLoadVideo('https://www.youtube.com/watch?v=test5', 'Test Video 5', 0, 'auto-timeout');
 
-        assertEq(win._openCalls, undefined, 'window.open 不应被调');
+        // 兜底 chrome.tabs.create 现在对所有 trigger 都跑 (不需要 user gesture)
+        assertEq(tabsCreateCalls.length, 1, '兜底 chrome.tabs.create 应被调 1 次 (auto-timeout 也能跑)');
+        assertTrue(tabsCreateCalls[0].url.includes('test5'), '兜底 url 应包含 test5');
     });
 
     // ----- Test 6: 重复下载检测 — localStorage 已有记录 → 跳过 -----
