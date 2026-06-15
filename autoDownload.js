@@ -28,21 +28,56 @@ $(function () {
     appendMsgOnLogo('端口:' + window.localStorage.getItem('folderPort'));
     recordTimes();
     // createTestButton()
-    //这里使用 setTimeout, 等待30秒, 为了让 dom 能完成加载之后, 再执行下载任务
-    var timeOut2 = setTimeout(function () {
-        clearTimeout(timeOut2);
-        if (!bgConfigLoaded) {
-            console.warn('[autoDownload] 30s 后 background config 还没拉回来，延迟到 60s 再 click');
-            var timeOut3 = setTimeout(function() {
-                clearTimeout(timeOut3);
-                $('#decollator').click();
-            }, 30000);
+    // (2026-06-15 09:46) 改为事件 callback 链 (取代 setTimeout 30s → click())
+    //
+    // 背景: setTimeout 30s 后调 $('#decollator').click() 是程序 click()
+    //       event.isTrusted=false → user gesture 丢失
+    //       → downLoadVideo 兜底 window.open(downie://) 被弹窗拦截器吞掉
+    //
+    // 新设计:
+    //   - receiveMsgFromBgd 一拉到 config → 触发 'bgConfigReady' 事件
+    //   - 监听 bgConfigReady 事件 → 立即调 downLoadAll('auto-config')
+    //   - 30s 兜底: 如果 config 还没拉到, 30s 后调 downLoadAll('auto-timeout')
+    //     (仍是程序触发, user gesture 丢失, 但主路径 sendMessage→sw 不依赖 gesture)
+    //   - 用户主动 click button → downLoadAll('user-click') (user gesture 在手)
+    var autoDownloadTriggered = false;
+    var downLoadAll = async function (trigger) {
+        if (autoDownloadTriggered) return;
+        autoDownloadTriggered = true;
+        console.log('[autoDownload] trigger=' + trigger + ' 开始下载');
+        if (checkUrl()) return;
+        if (!destination || !folderPort) {
+            console.warn('[autoDownload] destination/folderPort 还没就绪, trigger=' + trigger
+                + ' 跳过 (等下次)');
+            autoDownloadTriggered = false;  // 允许重试
             return;
         }
-        $('#decollator').click();
+        await loopVideos(trigger);
+        beforeReload();
+        console.log(getLocalTime());
+        await sleep(reloadSecond * 1000);
+        window.location.reload();
+    };
+    // 暴露给 createDownloadButton 的 onclick 用
+    window.__downLoadAll = downLoadAll;
+    // 事件 callback 链 (取代 setTimeout → click)
+    var onBgConfigReady = function () {
+        console.log('[autoDownload] bgConfigReady 事件触发, trigger=auto-config');
+        downLoadAll('auto-config');
+    };
+    window.addEventListener('bgConfigReady', onBgConfigReady);
+    // 30s 兜底: config 还没拉到, 程序触发一次 (user gesture 丢失)
+    setTimeout(function () {
+        if (!bgConfigLoaded) {
+            console.warn('[autoDownload] 30s 后 config 仍未就绪, 强制 trigger=auto-timeout '
+                + '(非 user gesture, 兜底 window.open 会被拦截)');
+            downLoadAll('auto-timeout');
+        }
+        // 否则事件链已经触发过了, 啥都不做
     }, 30 * 1000);
     listenPopup();
 });
+
 
 var bgConfigLoaded = false;  // 推荐 C 修复 (2026-06-14): 标记 background config 是否已同步
 var receiveMsgFromBgd = function () {
@@ -54,13 +89,21 @@ var receiveMsgFromBgd = function () {
         console.log("getSharedData:", response && response.destination, response && response.num);
         if (response) {
             updateDatasFromBg(response.destination, response.num, response.folderPort);
-            bgConfigLoaded = true;
+            if (!bgConfigLoaded) {
+                bgConfigLoaded = true;
+                // (2026-06-15 09:46) 事件 callback 链: config 拉到后立刻触发 'bgConfigReady'
+                window.dispatchEvent(new Event('bgConfigReady'));
+            }
         }
     });
     chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         if (request.action === "updateDestination") {
             console.log("updateDestination:", request.sharedData.destination, request.sharedData.num);
-            updateDatasFromBg(request.sharedData.destination, request.sharedData.num, request.sharedData.folderPort);
+            updateDatasFromBg(request.sharedData.destination, request.sharedData.num, request.folderPort);
+            if (!bgConfigLoaded) {
+                bgConfigLoaded = true;
+                window.dispatchEvent(new Event('bgConfigReady'));
+            }
         }
     });
 };
@@ -78,29 +121,16 @@ var createDownloadButton = function () {
     decollator.style.color = "black";
     $('#logo')[0].appendChild(decollator);
     decollator.innerHTML = '下载';
-    decollator.onclick = async function () {
-        if (checkUrl()) return;
-        if (!destination || !folderPort) {
-            console.warn('[autoDownload] destination/folderPort 还没从 background 拉回来，等 5s 再试...');
-            await sleep(5000);
-            if (destination && folderPort) {
-                await loopVideos();
-                beforeReload();
-            } else {
-                console.error('[autoDownload] 5s 后 destination 仍为空，放弃本次触发');
-                return;
-            }
-            console.log(getLocalTime());
-            await sleep(reloadSecond * 1000);
-            window.location.reload();
-            return;
+    decollator.onclick = function () {
+        // (2026-06-15 09:46) 用户主动 click → user gesture 在手
+        //   走 downLoadAll('user-click') → downLoadVideo 兜底 window.open 可用
+        //   不用 async + await sleep 是为了保持 user gesture 同步链
+        //   (Chrome 90+ 的 transient activation 在 await 后会丢失)
+        if (window.__downLoadAll) {
+            window.__downLoadAll('user-click');
+        } else {
+            console.error('[autoDownload] window.__downLoadAll 未就绪 (脚本初始化未完成)');
         }
-        await loopVideos();
-        beforeReload();
-        console.log(getLocalTime());
-        // 异步 sleep, 不用 setTimeout 模拟, 避免独占主线程
-        await sleep(reloadSecond * 1000);
-        window.location.reload();
     };
 };
 
@@ -228,9 +258,10 @@ var appendMsgOnLogo = function (msg) {
  * 循环视频列表, 检查是否已经被下载
  * (2026-06-15) 改成 async, 每个视频间 sleep 1.2s 给 Downie 协议注册留时间
  */
-var loopVideos = async function () {
+var loopVideos = async function (trigger) {
     console.info("destination:" + destination);
     console.info("num:" + num);
+    console.info("trigger:" + trigger);
     let elements = document.querySelectorAll('h3 a');
     for (let i = 0; i < num; i++) {
         let a = elements[i];
@@ -243,7 +274,8 @@ var loopVideos = async function () {
         href = normalizeYouTubeHref(href);
         // 获取视频标题: 优先 .title 属性（YouTube 总是会设置），回退 .innerText (修复 h3 a 没有内嵌 span 的情况)
         let name = a.getAttribute('title') || a.innerText || a.textContent || "";
-        await downLoadVideo(href, name, i);
+        // (2026-06-15 09:46) 把 trigger 透传给 downLoadVideo, 用于 user gesture 决策
+        await downLoadVideo(href, name, i, trigger);
         // 关键: 每次创建 tab 之间间隔 1.2s, 给 Downie 协议注册留时间
         // Chrome MV3 service worker 对 chrome.tabs.create 有 1s 限速, 多留 200ms 余量
         await sleep(1200);
@@ -296,7 +328,7 @@ var loopShortVideos = function () {
  * 修复: 走 chrome.runtime.sendMessage -> background.js 的 chrome.tabs.create
  *       每次创建之间 sleep 1.2s (在 loopVideos 里控制)
  */
-var downLoadVideo = async function (url, name, i) {
+var downLoadVideo = async function (url, name, i, trigger) {
     // 处理url，去除pp参数
     try {
         let urlObj = new URL(url);
@@ -317,16 +349,84 @@ var downLoadVideo = async function (url, name, i) {
         downieUrl = downieUrl.replaceAll("&", "%26");
         downieUrl = downieUrl.replaceAll("#", "%23");
         downieUrl += '&destination=' + destination;
-        // (2026-06-15) 直接调 chrome.tabs.create, 不再走 service worker
-        // 原因: service worker 不热重载, 用户的 Chrome 可能还是老版 background.js
-        //       (没有 openDownieUrl handler), 导致 "unknown action: openDownieUrl" 报错
-        // 修复: content_scripts 直接调 chrome.tabs.create (需要 manifest 里的 "tabs" 权限)
-        //       限速靠 loopVideos 里的 await sleep(1200) 串行调
-        try {
-            await chrome.tabs.create({url: downieUrl, active: false});
-            console.log(i + ' ' + name + ' (downie 创建 tab 成功)');
-        } catch (e) {
-            console.error(i + ' ' + name + ' chrome.tabs.create 失败:', e && e.message);
+
+        // (2026-06-15 09:46) 双保险触发 downie (回滚 8b07e2d 的 content script 改动):
+        //
+        // 方案 1 (主): chrome.runtime.sendMessage → sw openDownieUrl → chrome.tabs.create
+        //   ✅ 不依赖 user gesture (sw 里 tabs.create 是后台调)
+        //   ✅ MV3 sw 限速可控 (handler 内 sleep 1.2s)
+        //   ⚠️ 风险: 老 sw 可能没 openDownieUrl handler → "unknown action"
+        //
+        // 方案 2 (兜底): 3 次 sendMessage 失败 → window.open(downie://)
+        //   ✅ 主路径全挂 (sw 死了 / Chrome 没热重载) 还能跑
+        //   ⚠️ 需要 user gesture, 否则 Chrome 弹窗拦截器会吃掉 window.open
+        //   ⚠️ setTimeout 30s 后的程序 click 已丢失 user gesture → 兜底会被拦截
+        //
+        // 双保险触发逻辑 (按 user gesture 在不在手分情况):
+        // | trigger      | isTrusted | 主路径      | 兜底 window.open |
+        // |--------------|-----------|-------------|------------------|
+        // | user-click   | true      | ✅ sendMessage | ✅ 可用         |
+        // | auto-config  | false     | ✅ sendMessage | ❌ 被拦截       |
+        // | auto-timeout | false     | ✅ sendMessage | ❌ 被拦截       |
+        //
+        // 结论: 主路径永远跑; 兜底仅在 user gesture 在手时才尝试 (并明确报告)
+
+        // 方案 1: 3 次 sendMessage 重试
+        let sendSuccess = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const resp = await Promise.race([
+                    chrome.runtime.sendMessage({
+                        action: 'openDownieUrl',
+                        url: downieUrl,
+                        index: i
+                    }),
+                    new Promise((_, reject) => setTimeout(
+                        () => reject(new Error('sendMessage timeout 5s')), 5000))
+                ]);
+                if (resp && resp.success) {
+                    console.log(i + ' ' + name + ' (sendMessage 成功 attempt=' + attempt + ')');
+                    sendSuccess = true;
+                    break;
+                }
+                console.warn(i + ' ' + name + ' sendMessage 返回失败 attempt=' + attempt + ':',
+                    resp && resp.error);
+            } catch (e) {
+                console.warn(i + ' ' + name + ' sendMessage 异常 attempt=' + attempt + ':',
+                    e && e.message);
+            }
+            if (attempt < 3) await sleep(800);  // 重试 backoff
+        }
+
+        // 方案 2: 兜底 window.open (仅 user gesture 在手时有效)
+        if (!sendSuccess) {
+            // (2026-06-15 09:46) user gesture 检测:
+            //   - 真实 user click: 事件 callback 链里 isTrusted=true
+            //   - setTimeout 30s 后程序 click(): isTrusted=false, user gesture 丢失
+            //   - 30s 兜底 setTimeout 里调: isTrusted=false
+            // window.open(downie://) 走 Chrome 弹窗拦截器,
+            //   非 user gesture 时返回 null (被吞掉), 不报错也不弹窗
+            const hasUserGesture = trigger === 'user-click';
+            if (!hasUserGesture) {
+                console.error(i + ' ' + name + ' 3 次 sendMessage 失败, '
+                    + '但 trigger=' + trigger + ' (非 user gesture), 兜底 window.open '
+                    + '会被弹窗拦截器吞掉, 跳过兜底');
+            } else {
+                console.warn(i + ' ' + name + ' 3 次 sendMessage 失败, '
+                    + '兜底 window.open (user gesture 在手)');
+                try {
+                    const win = window.open(downieUrl, '_blank');
+                    if (win) {
+                        console.log(i + ' ' + name + ' (window.open 兜底成功)');
+                    } else {
+                        console.error(i + ' ' + name + ' window.open 返回 null '
+                            + '(可能被弹窗拦截器拦截)');
+                    }
+                } catch (e) {
+                    console.error(i + ' ' + name + ' window.open 异常:',
+                        e && e.message);
+                }
+            }
         }
     } else if (downloader === 'ytd') {
         var ytdUrl = 'ytd://' + (url).replace(/https?:\/\//i, '');
